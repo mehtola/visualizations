@@ -130,6 +130,19 @@ def generate_barabasi_albert(n, m):
     return adj
 
 
+def clamp_watts_strogatz_k(n, k):
+    """Clamp k to the even neighbor count used by the Watts-Strogatz generator."""
+    k = max(2, min(k, n - 1))
+    if k % 2 == 1:
+        k -= 1
+    return max(2, k)
+
+
+def clamp_barabasi_albert_m(n, m):
+    """Clamp m to the attachment count used by the Barabasi-Albert generator."""
+    return max(1, min(m, n - 2))
+
+
 # ── Graph analysis ───────────────────────────────────────────────────────────
 def compute_components(adj):
     """Find connected components via BFS. Returns list of sets."""
@@ -366,10 +379,11 @@ def draw_degree_distribution(ax):
         expected = (n - 1) * state["p"]
         label = f"E[deg] = (n-1)p = {expected:.1f}"
     elif model == "Watts-Strogatz":
-        expected = state["k"]
+        expected = clamp_watts_strogatz_k(n, state["k"])
         label = f"E[deg] = k = {expected}"
     elif model == "Barabási–Albert":
-        expected = 2 * state["m"]
+        m = clamp_barabasi_albert_m(n, state["m"])
+        expected = 2 * m
         label = f"E[deg] ≈ 2m = {expected}"
 
     if expected is not None:
@@ -456,10 +470,10 @@ def generate_graph():
     if model == "Erdős–Rényi":
         adj = generate_erdos_renyi(n, state["p"])
     elif model == "Watts-Strogatz":
-        k = max(2, min(state["k"], n - 1))
+        k = clamp_watts_strogatz_k(n, state["k"])
         adj = generate_watts_strogatz(n, k, state["beta"])
     elif model == "Barabási–Albert":
-        m = max(1, min(state["m"], n - 2))
+        m = clamp_barabasi_albert_m(n, state["m"])
         adj = generate_barabasi_albert(n, m)
     else:
         adj = np.zeros((n, n), dtype=int)

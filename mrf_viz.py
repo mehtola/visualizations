@@ -6,6 +6,9 @@ Interactive tool to explore 10 Markov Random Field instances (12 binary variable
 samples, and single-variable marginals.
 """
 
+import os
+from pathlib import Path
+
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, Button, RadioButtons
@@ -15,20 +18,57 @@ from matplotlib.gridspec import GridSpec
 N_VARS = 12
 N_STATES = 4096
 N_INSTANCES = 10
-DATA_DIR = "/Users/vmehtola/Documents/TCDQ/TCDQ/fbm-classical-training/data/mrf"
+DATA_DIR_ENV = "MRF_DATA_DIR"
+SCRIPT_DIR = Path(__file__).resolve().parent
+DATA_DIR_CANDIDATES = (
+    SCRIPT_DIR / "data" / "mrf",
+    SCRIPT_DIR.parent / "TCDQ" / "TCDQ" / "fbm-classical-training" / "data" / "mrf",
+)
 
 # Binary representations of all 4096 states: shape (4096, 12)
 BIT_MATRIX = ((np.arange(N_STATES)[:, None] >> np.arange(N_VARS)) & 1).astype(float)
 
 
 # ── Data loading and precomputation ──────────────────────────────────────────
-def load_all_instances():
+def resolve_data_dir():
+    """Return the configured MRF data directory."""
+    env_path = os.environ.get(DATA_DIR_ENV)
+    if env_path:
+        data_dir = Path(env_path).expanduser()
+        if data_dir.exists():
+            return data_dir
+        raise FileNotFoundError(
+            f"{DATA_DIR_ENV} points to a missing directory: {data_dir}"
+        )
+
+    for data_dir in DATA_DIR_CANDIDATES:
+        if data_dir.exists():
+            return data_dir
+
+    checked = "\n".join(f"  - {path}" for path in DATA_DIR_CANDIDATES)
+    raise FileNotFoundError(
+        "MRF data directory not found. Set MRF_DATA_DIR to the directory "
+        "containing instance folders 0..9, or place the data under data/mrf.\n"
+        f"Checked:\n{checked}"
+    )
+
+
+def load_all_instances(data_dir=None):
     """Load all 10 MRF instances and precompute derived quantities."""
     data = {}
+    data_dir = Path(data_dir) if data_dir is not None else resolve_data_dir()
     for i in range(N_INSTANCES):
-        path = f"{DATA_DIR}/{i}"
-        dist = np.loadtxt(f"{path}/target_dist.txt")
-        samples = np.loadtxt(f"{path}/training_set.txt")[:, ::-1]  # align bit order
+        path = data_dir / str(i)
+        dist_path = path / "target_dist.txt"
+        samples_path = path / "training_set.txt"
+        if not dist_path.exists() or not samples_path.exists():
+            raise FileNotFoundError(
+                f"Missing MRF files for instance {i}: "
+                f"{dist_path} and {samples_path}"
+            )
+
+        dist = np.loadtxt(dist_path)
+        samples = np.loadtxt(samples_path)[:, ::-1]  # align bit order
 
         # Exact marginals: P(xi=1) = sum over states where xi=1 of p(state)
         exact_marginals = BIT_MATRIX.T @ dist
@@ -67,10 +107,6 @@ def load_all_instances():
     return data
 
 
-print("Loading MRF instances...")
-all_data = load_all_instances()
-print("Done.")
-
 # ── State ─────────────────────────────────────────────────────────────────────
 state = {
     "instance": 0,
@@ -79,17 +115,7 @@ state = {
     "sample_offset": 0,
 }
 
-# ── Figure and axes ──────────────────────────────────────────────────────────
-fig = plt.figure(figsize=(16, 10))
-fig.canvas.manager.set_window_title("MRF Data Explorer")
-
-gs = GridSpec(3, 2, figure=fig, height_ratios=[5, 5, 0.8],
-              hspace=0.35, wspace=0.3)
-
-ax_corr = fig.add_subplot(gs[0, 0])
-ax_samples = fig.add_subplot(gs[0, 1])
-ax_dist = fig.add_subplot(gs[1, 0])
-ax_marg = fig.add_subplot(gs[1, 1])
+all_data = {}
 
 
 # ── Drawing functions ────────────────────────────────────────────────────────
@@ -237,31 +263,6 @@ def redraw():
     fig.canvas.draw_idle()
 
 
-# ── Widgets ──────────────────────────────────────────────────────────────────
-# Instance slider
-ax_inst_slider = fig.add_axes([0.06, 0.04, 0.18, 0.03])
-slider_instance = Slider(ax_inst_slider, "Instance", 0, N_INSTANCES - 1,
-                         valinit=0, valstep=1, color="steelblue")
-
-# Correlation source radio buttons
-ax_radio = fig.add_axes([0.30, 0.015, 0.12, 0.06])
-radio_corr = RadioButtons(ax_radio, ("Exact dist", "Samples"), active=0)
-for label in radio_corr.labels:
-    label.set_fontsize(8)
-
-# Visible samples slider
-ax_vis_slider = fig.add_axes([0.50, 0.04, 0.16, 0.03])
-slider_visible = Slider(ax_vis_slider, "Visible", 10, 100,
-                        valinit=50, valstep=5, color="steelblue")
-
-# Prev / Next buttons
-ax_prev = fig.add_axes([0.74, 0.03, 0.06, 0.04])
-btn_prev = Button(ax_prev, "◀ Prev", color="lightgray", hovercolor="lightblue")
-
-ax_next = fig.add_axes([0.82, 0.03, 0.06, 0.04])
-btn_next = Button(ax_next, "Next ▶", color="lightgray", hovercolor="lightblue")
-
-
 # ── Event handlers ───────────────────────────────────────────────────────────
 def on_instance_change(val):
     state["instance"] = int(val)
@@ -296,13 +297,58 @@ def on_next(event):
     fig.canvas.draw_idle()
 
 
-# ── Connect events ───────────────────────────────────────────────────────────
-slider_instance.on_changed(on_instance_change)
-radio_corr.on_clicked(on_corr_source)
-slider_visible.on_changed(on_visible_change)
-btn_prev.on_clicked(on_prev)
-btn_next.on_clicked(on_next)
+def main():
+    """Load data and start the interactive MRF explorer."""
+    global all_data, fig, ax_corr, ax_samples, ax_dist, ax_marg
+    global slider_instance, radio_corr, slider_visible, btn_prev, btn_next
 
-# ── Initial draw and show ───────────────────────────────────────────────────
-redraw()
-plt.show()
+    data_dir = resolve_data_dir()
+    print(f"Loading MRF instances from {data_dir}...")
+    all_data = load_all_instances(data_dir)
+    print("Done.")
+
+    # Figure and axes
+    fig = plt.figure(figsize=(16, 10))
+    fig.canvas.manager.set_window_title("MRF Data Explorer")
+
+    gs = GridSpec(3, 2, figure=fig, height_ratios=[5, 5, 0.8],
+                  hspace=0.35, wspace=0.3)
+
+    ax_corr = fig.add_subplot(gs[0, 0])
+    ax_samples = fig.add_subplot(gs[0, 1])
+    ax_dist = fig.add_subplot(gs[1, 0])
+    ax_marg = fig.add_subplot(gs[1, 1])
+
+    # Widgets
+    ax_inst_slider = fig.add_axes([0.06, 0.04, 0.18, 0.03])
+    slider_instance = Slider(ax_inst_slider, "Instance", 0, N_INSTANCES - 1,
+                             valinit=0, valstep=1, color="steelblue")
+
+    ax_radio = fig.add_axes([0.30, 0.015, 0.12, 0.06])
+    radio_corr = RadioButtons(ax_radio, ("Exact dist", "Samples"), active=0)
+    for label in radio_corr.labels:
+        label.set_fontsize(8)
+
+    ax_vis_slider = fig.add_axes([0.50, 0.04, 0.16, 0.03])
+    slider_visible = Slider(ax_vis_slider, "Visible", 10, 100,
+                            valinit=50, valstep=5, color="steelblue")
+
+    ax_prev = fig.add_axes([0.74, 0.03, 0.06, 0.04])
+    btn_prev = Button(ax_prev, "◀ Prev", color="lightgray", hovercolor="lightblue")
+
+    ax_next = fig.add_axes([0.82, 0.03, 0.06, 0.04])
+    btn_next = Button(ax_next, "Next ▶", color="lightgray", hovercolor="lightblue")
+
+    # Connect events
+    slider_instance.on_changed(on_instance_change)
+    radio_corr.on_clicked(on_corr_source)
+    slider_visible.on_changed(on_visible_change)
+    btn_prev.on_clicked(on_prev)
+    btn_next.on_clicked(on_next)
+
+    redraw()
+    plt.show()
+
+
+if __name__ == "__main__":
+    main()
